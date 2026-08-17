@@ -109,9 +109,9 @@ func (r Runner) Run(ctx context.Context, args []string, stdout, stderr io.Writer
 			Timeout: options.timeout, PollInterval: options.poll,
 		})
 	case config.CommandSetEdge:
-		result, err = workflow.SetEdge(ctx, cfg, options.hostname, workflow.EdgeTarget{Host: options.host, IP: options.ip}, services, workflow.EdgeOptions{DryRun: options.dryRun})
+		result, err = workflow.SetEdge(ctx, cfg, options.hostname, workflow.EdgeTarget{Host: options.host, IP: options.ip}, services, workflow.EdgeOptions{Zone: options.zone, DryRun: options.dryRun})
 	case config.CommandSetBackend:
-		err = errors.New("set-backend workflow is not implemented")
+		result, err = workflow.SetBackend(ctx, cfg, options.hostname, options.backend, services, workflow.BackendOptions{Zone: options.zone, DryRun: options.dryRun})
 	case config.CommandStatus:
 		result, err = workflow.Status(ctx, cfg, options.hostname, services)
 	default:

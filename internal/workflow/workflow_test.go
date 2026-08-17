@@ -332,7 +332,7 @@ func TestAddPreflightBlocksFallbackMismatch(t *testing.T) {
 func TestSetEdgeOnlyWritesOneDNSPodTrafficRecord(t *testing.T) {
 	t.Parallel()
 	cf, dns, resolver := readyServices()
-	result, err := SetEdge(context.Background(), testConfig(), "custom", EdgeTarget{Host: "edge.example.com"}, Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, EdgeOptions{})
+	result, err := SetEdge(context.Background(), testConfig(), "custom.example.com", EdgeTarget{Host: "edge.example.com"}, Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, EdgeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +348,7 @@ func TestSetEdgeUnchangedDoesNotWrite(t *testing.T) {
 	t.Parallel()
 	cf, dns, resolver := readyServices()
 	dns.setAction = "unchanged"
-	result, err := SetEdge(context.Background(), testConfig(), "custom", EdgeTarget{Host: "edge.example.com"}, Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, EdgeOptions{})
+	result, err := SetEdge(context.Background(), testConfig(), "custom.example.com", EdgeTarget{Host: "edge.example.com"}, Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, EdgeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +391,7 @@ func TestSetEdgePreflightBlocksAmbiguousApexWithoutWrite(t *testing.T) {
 		{ID: "a", Name: "@", Type: "A", Content: "1.1.1.1", Line: "默认"},
 		{ID: "c", Name: "@", Type: "CNAME", Content: "old.example.com", Line: "默认"},
 	}
-	_, err := SetEdge(context.Background(), testConfig(), "custom", EdgeTarget{Host: "edge.example.com"}, Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, EdgeOptions{})
+	_, err := SetEdge(context.Background(), testConfig(), "custom.example.com", EdgeTarget{Host: "edge.example.com"}, Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, EdgeOptions{})
 	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("expected ambiguous apex blocker, got %v", err)
 	}
@@ -404,7 +404,7 @@ func TestSetEdgePreflightBlocksTrafficOnAnotherLine(t *testing.T) {
 	t.Parallel()
 	cf, dns, resolver := readyServices()
 	dns.records = []domain.DNSRecord{{ID: "other", Name: "@", Type: "A", Content: "1.1.1.1", Line: "境外"}}
-	_, err := SetEdge(context.Background(), testConfig(), "custom", EdgeTarget{Host: "edge.example.com"}, Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, EdgeOptions{})
+	_, err := SetEdge(context.Background(), testConfig(), "custom.example.com", EdgeTarget{Host: "edge.example.com"}, Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, EdgeOptions{})
 	if err == nil || !strings.Contains(err.Error(), "unexpected line") {
 		t.Fatalf("expected non-default line blocker, got %v", err)
 	}

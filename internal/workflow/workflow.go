@@ -71,6 +71,7 @@ type AddOptions struct {
 }
 
 type EdgeOptions struct {
+	Zone   string
 	DryRun bool
 }
 
@@ -574,11 +575,11 @@ type edgeSnapshot struct {
 	chain    []string
 }
 
-func SetEdge(ctx context.Context, cfg config.Config, subdomain string, target EdgeTarget, services Services, options EdgeOptions) (domain.OperationResult, error) {
+func SetEdge(ctx context.Context, cfg config.Config, hostname string, target EdgeTarget, services Services, options EdgeOptions) (domain.OperationResult, error) {
 	if err := validateServices(services); err != nil {
 		return domain.OperationResult{}, err
 	}
-	hostname, err := domain.BuildHostname(subdomain, cfg.CFParentZoneName)
+	hostname, err := domain.NormalizeHostname(hostname)
 	if err != nil {
 		return domain.OperationResult{}, err
 	}
@@ -586,7 +587,7 @@ func SetEdge(ctx context.Context, cfg config.Config, subdomain string, target Ed
 	if err != nil {
 		return domain.OperationResult{}, err
 	}
-	snap, err := preflightEdge(ctx, cfg, hostname, recordType, value, services)
+	snap, err := preflightEdge(ctx, cfg, hostname, recordType, value, services, options.Zone)
 	if err != nil {
 		return domain.OperationResult{}, err
 	}
@@ -622,10 +623,19 @@ func normalizeEdgeTarget(target EdgeTarget) (string, string, error) {
 	return "CNAME", host, nil
 }
 
-func preflightEdge(ctx context.Context, cfg config.Config, hostname, recordType, value string, services Services) (edgeSnapshot, error) {
+func preflightEdge(ctx context.Context, cfg config.Config, hostname, recordType, value string, services Services, zoneOverride string) (edgeSnapshot, error) {
 	var snap edgeSnapshot
-	_, _, checks, blockers := preflightIdentity(ctx, cfg, services.Cloudflare)
-	snap.checks = checks
+	infra, discoveryErr := discoverInfrastructure(ctx, cfg, hostname, zoneOverride, services.Cloudflare)
+	blockers := []string{}
+	if discoveryErr != nil {
+		blockers = append(blockers, discoveryErr.Error())
+	} else {
+		snap.checks = []domain.Check{
+			{Name: "cloudflare_parent_zone", OK: true},
+			{Name: "cloudflare_saas_zone", OK: true, Message: infra.Source},
+			{Name: "fallback_origin", OK: true},
+		}
+	}
 	zone, err := services.DNSPod.FindZone(ctx, hostname)
 	if err != nil {
 		blockers = append(blockers, "cannot inspect DNSPod Zone: "+err.Error())
@@ -650,14 +660,12 @@ func preflightEdge(ctx context.Context, cfg config.Config, hostname, recordType,
 			snap.checks = append(snap.checks, domain.Check{Name: "public_delegation", OK: true})
 		}
 	}
-	host, err := services.Cloudflare.FindCustomHostname(ctx, cfg.CFSaaSZoneID, hostname)
-	if err != nil {
-		blockers = append(blockers, "cannot inspect Cloudflare Custom Hostname: "+err.Error())
-	} else if host == nil {
+	host := infra.Hostname
+	if discoveryErr == nil && host == nil {
 		blockers = append(blockers, "Cloudflare Custom Hostname does not exist")
-	} else if !host.Active() {
+	} else if discoveryErr == nil && !host.Active() {
 		blockers = append(blockers, fmt.Sprintf("Cloudflare Custom Hostname/SSL is not active: hostname=%s ssl=%s", host.Status, host.SSLStatus))
-	} else {
+	} else if discoveryErr == nil {
 		snap.checks = append(snap.checks, domain.Check{Name: "custom_hostname_active", OK: true})
 	}
 	snap.hostname = host
