@@ -13,6 +13,7 @@ import (
 )
 
 type Cloudflare interface {
+	ListZones(context.Context) ([]domain.Zone, error)
 	GetZone(context.Context, string) (domain.Zone, error)
 	GetFallbackOrigin(context.Context, string) (domain.FallbackOrigin, error)
 	ListDNSRecords(context.Context, string, string) ([]domain.DNSRecord, error)

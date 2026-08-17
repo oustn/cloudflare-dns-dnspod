@@ -13,22 +13,45 @@ import (
 
 type fakeCF struct {
 	zones        map[string]domain.Zone
+	zoneList     []domain.Zone
 	fallback     domain.FallbackOrigin
+	fallbacks    map[string]domain.FallbackOrigin
 	records      map[string][]domain.DNSRecord
 	host         *domain.CustomHostname
+	hosts        map[string]*domain.CustomHostname
 	hostSequence []*domain.CustomHostname
 	getHostCalls int
 	writes       []string
 }
 
 func (f *fakeCF) GetZone(_ context.Context, id string) (domain.Zone, error) { return f.zones[id], nil }
-func (f *fakeCF) GetFallbackOrigin(context.Context, string) (domain.FallbackOrigin, error) {
+func (f *fakeCF) ListZones(context.Context) ([]domain.Zone, error) {
+	if len(f.zoneList) > 0 {
+		return append([]domain.Zone(nil), f.zoneList...), nil
+	}
+	result := make([]domain.Zone, 0, len(f.zones))
+	for _, zone := range f.zones {
+		result = append(result, zone)
+	}
+	return result, nil
+}
+func (f *fakeCF) GetFallbackOrigin(_ context.Context, zoneID string) (domain.FallbackOrigin, error) {
+	if f.fallbacks != nil {
+		fallback, ok := f.fallbacks[zoneID]
+		if !ok {
+			return domain.FallbackOrigin{}, fmt.Errorf("fallback not configured")
+		}
+		return fallback, nil
+	}
 	return f.fallback, nil
 }
 func (f *fakeCF) ListDNSRecords(_ context.Context, _ string, name string) ([]domain.DNSRecord, error) {
 	return append([]domain.DNSRecord(nil), f.records[name]...), nil
 }
-func (f *fakeCF) FindCustomHostname(context.Context, string, string) (*domain.CustomHostname, error) {
+func (f *fakeCF) FindCustomHostname(_ context.Context, zoneID, _ string) (*domain.CustomHostname, error) {
+	if f.hosts != nil {
+		return f.hosts[zoneID], nil
+	}
 	return f.host, nil
 }
 func (f *fakeCF) GetCustomHostname(context.Context, string, string) (*domain.CustomHostname, error) {
