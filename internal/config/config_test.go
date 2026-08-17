@@ -19,18 +19,45 @@ func completeValues() map[string]string {
 	}
 }
 
-func TestFromValuesCommandRequirements(t *testing.T) {
+func minimalValues() map[string]string {
+	return map[string]string{
+		"CF_API_TOKEN":      "cf-secret",
+		"DNSPOD_SECRET_ID":  "dns-id",
+		"DNSPOD_SECRET_KEY": "dns-secret",
+	}
+}
+
+func TestFromValuesUsesMinimalConfiguration(t *testing.T) {
 	t.Parallel()
-	values := completeValues()
-	delete(values, "CF_FALLBACK_HOST")
-	if _, err := FromValues(values, CommandAdd); err == nil {
-		t.Fatal("add accepted missing fallback host")
+	values := minimalValues()
+	values["CF_ZONE"] = "Platform.Example.Net."
+	cfg, err := FromValues(values, CommandAdd)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := FromValues(values, CommandSetEdge); err != nil {
-		t.Fatalf("set-edge rejected optional fallback: %v", err)
+	if cfg.CFZone != "platform.example.net" {
+		t.Fatalf("CFZone = %q", cfg.CFZone)
 	}
-	if _, err := FromValues(values, CommandStatus); err != nil {
-		t.Fatalf("status rejected optional fallback: %v", err)
+	if cfg.DNSPodRecordLine != "默认" {
+		t.Fatalf("DNSPodRecordLine = %q", cfg.DNSPodRecordLine)
+	}
+}
+
+func TestFromValuesAllowsMissingOptionalZone(t *testing.T) {
+	t.Parallel()
+	if _, err := FromValues(minimalValues(), CommandStatus); err != nil {
+		t.Fatalf("optional CF_ZONE rejected: %v", err)
+	}
+}
+
+func TestFromValuesRequiresOnlySecrets(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"CF_API_TOKEN", "DNSPOD_SECRET_ID", "DNSPOD_SECRET_KEY"} {
+		values := minimalValues()
+		delete(values, key)
+		if _, err := FromValues(values, CommandAdd); err == nil || !strings.Contains(err.Error(), key) {
+			t.Fatalf("missing %s returned %v", key, err)
+		}
 	}
 }
 

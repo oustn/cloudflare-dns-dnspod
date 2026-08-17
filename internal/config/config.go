@@ -20,7 +20,9 @@ const (
 )
 
 type Config struct {
-	CFAPIToken       string
+	CFAPIToken string
+	CFZone     string
+	// Legacy identity fields remain during the workflow migration and are removed once unused.
 	CFParentZoneID   string
 	CFParentZoneName string
 	CFSaaSZoneID     string
@@ -31,7 +33,7 @@ type Config struct {
 }
 
 var names = []string{
-	"CF_API_TOKEN", "CF_PARENT_ZONE_ID", "CF_PARENT_ZONE_NAME", "CF_SAAS_ZONE_ID",
+	"CF_API_TOKEN", "CF_ZONE", "CF_PARENT_ZONE_ID", "CF_PARENT_ZONE_NAME", "CF_SAAS_ZONE_ID",
 	"CF_FALLBACK_HOST", "DNSPOD_SECRET_ID", "DNSPOD_SECRET_KEY", "DNSPOD_RECORD_LINE",
 }
 
@@ -53,13 +55,7 @@ func Load(path string, command Command) (Config, error) {
 }
 
 func FromValues(values map[string]string, command Command) (Config, error) {
-	required := []string{
-		"CF_API_TOKEN", "CF_PARENT_ZONE_ID", "CF_PARENT_ZONE_NAME", "CF_SAAS_ZONE_ID",
-		"DNSPOD_SECRET_ID", "DNSPOD_SECRET_KEY",
-	}
-	if command == CommandAdd {
-		required = append(required, "CF_FALLBACK_HOST")
-	}
+	required := []string{"CF_API_TOKEN", "DNSPOD_SECRET_ID", "DNSPOD_SECRET_KEY"}
 	var missing []string
 	for _, name := range required {
 		if strings.TrimSpace(values[name]) == "" {
@@ -70,9 +66,20 @@ func FromValues(values map[string]string, command Command) (Config, error) {
 		sort.Strings(missing)
 		return Config{}, fmt.Errorf("missing environment variables: %s", strings.Join(missing, ", "))
 	}
-	parent, err := domain.NormalizeHostname(values["CF_PARENT_ZONE_NAME"])
-	if err != nil {
-		return Config{}, fmt.Errorf("CF_PARENT_ZONE_NAME: %w", err)
+	zone := strings.TrimSpace(values["CF_ZONE"])
+	var err error
+	if zone != "" {
+		zone, err = domain.NormalizeHostname(zone)
+		if err != nil {
+			return Config{}, fmt.Errorf("CF_ZONE: %w", err)
+		}
+	}
+	parent := strings.TrimSpace(values["CF_PARENT_ZONE_NAME"])
+	if parent != "" {
+		parent, err = domain.NormalizeHostname(parent)
+		if err != nil {
+			return Config{}, fmt.Errorf("CF_PARENT_ZONE_NAME: %w", err)
+		}
 	}
 	fallback := strings.TrimSpace(values["CF_FALLBACK_HOST"])
 	if fallback != "" {
@@ -87,6 +94,7 @@ func FromValues(values map[string]string, command Command) (Config, error) {
 	}
 	return Config{
 		CFAPIToken:       strings.TrimSpace(values["CF_API_TOKEN"]),
+		CFZone:           zone,
 		CFParentZoneID:   strings.TrimSpace(values["CF_PARENT_ZONE_ID"]),
 		CFParentZoneName: parent,
 		CFSaaSZoneID:     strings.TrimSpace(values["CF_SAAS_ZONE_ID"]),

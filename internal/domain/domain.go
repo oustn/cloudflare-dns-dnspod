@@ -22,6 +22,7 @@ type DNSRecord struct {
 	Line    string `json:"line,omitempty"`
 	Managed bool   `json:"managed,omitempty"`
 	Source  string `json:"source,omitempty"`
+	Proxied bool   `json:"proxied,omitempty"`
 }
 
 type ValidationRecord struct {
@@ -30,11 +31,12 @@ type ValidationRecord struct {
 }
 
 type CustomHostname struct {
-	ID                string             `json:"id"`
-	Hostname          string             `json:"hostname"`
-	Status            string             `json:"status"`
-	SSLStatus         string             `json:"ssl_status"`
-	ValidationRecords []ValidationRecord `json:"validation_records,omitempty"`
+	ID                 string             `json:"id"`
+	Hostname           string             `json:"hostname"`
+	Status             string             `json:"status"`
+	SSLStatus          string             `json:"ssl_status"`
+	CustomOriginServer string             `json:"custom_origin_server,omitempty"`
+	ValidationRecords  []ValidationRecord `json:"validation_records,omitempty"`
 }
 
 func (h *CustomHostname) Active() bool {
@@ -169,4 +171,65 @@ func NormalizeNameservers(values []string) ([]string, error) {
 
 func EqualTarget(a, b string) bool {
 	return strings.EqualFold(strings.TrimSuffix(strings.TrimSpace(a), "."), strings.TrimSuffix(strings.TrimSpace(b), "."))
+}
+
+func FindParentZone(hostname string, zones []Zone) (Zone, error) {
+	host, err := NormalizeHostname(hostname)
+	if err != nil {
+		return Zone{}, err
+	}
+	var selected Zone
+	for _, zone := range zones {
+		if zone.ID == "" || !strings.EqualFold(zone.Status, "active") {
+			continue
+		}
+		name, err := NormalizeHostname(zone.Name)
+		if err != nil || host == name || !strings.HasSuffix(host, "."+name) {
+			continue
+		}
+		if len(name) > len(selected.Name) {
+			zone.Name = name
+			selected = zone
+		}
+	}
+	if selected.ID == "" {
+		return Zone{}, fmt.Errorf("no active Cloudflare parent Zone contains %s", host)
+	}
+	return selected, nil
+}
+
+func RebaseHostname(hostname, parentZone, targetZone string) (string, error) {
+	host, err := NormalizeHostname(hostname)
+	if err != nil {
+		return "", err
+	}
+	parent, err := NormalizeHostname(parentZone)
+	if err != nil {
+		return "", fmt.Errorf("parent zone: %w", err)
+	}
+	target, err := NormalizeHostname(targetZone)
+	if err != nil {
+		return "", fmt.Errorf("target zone: %w", err)
+	}
+	suffix := "." + parent
+	if host == parent || !strings.HasSuffix(host, suffix) {
+		return "", fmt.Errorf("hostname %s is not below parent Zone %s", host, parent)
+	}
+	relative := strings.TrimSuffix(host, suffix)
+	return NormalizeHostname(relative + "." + target)
+}
+
+func ClassifyTarget(value, label string) (string, string, error) {
+	normalized := strings.TrimSpace(value)
+	if addr, err := netip.ParseAddr(normalized); err == nil {
+		if err := ValidatePublicIPv4(normalized); err != nil {
+			return "", "", fmt.Errorf("%s: %w", label, err)
+		}
+		return "A", addr.String(), nil
+	}
+	host, err := NormalizeHostname(normalized)
+	if err != nil {
+		return "", "", fmt.Errorf("%s Host: %w", label, err)
+	}
+	return "CNAME", host, nil
 }
