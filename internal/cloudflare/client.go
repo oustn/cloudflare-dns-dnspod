@@ -116,6 +116,44 @@ func (c *Client) GetZone(ctx context.Context, zoneID string) (domain.Zone, error
 	return domain.Zone{ID: raw.ID, Name: name, Status: strings.ToLower(raw.Status)}, nil
 }
 
+func (c *Client) ListZones(ctx context.Context) ([]domain.Zone, error) {
+	const pageSize = 50
+	result := []domain.Zone{}
+	seenIDs := map[string]bool{}
+	seenNames := map[string]bool{}
+	for page := 1; ; page++ {
+		var raw []struct {
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		}
+		query := url.Values{
+			"status":   {"active"},
+			"per_page": {fmt.Sprint(pageSize)},
+			"page":     {fmt.Sprint(page)},
+		}
+		if err := c.request(ctx, http.MethodGet, "/zones", query, nil, &raw); err != nil {
+			return nil, err
+		}
+		for _, item := range raw {
+			name, err := domain.NormalizeHostname(item.Name)
+			if err != nil || item.ID == "" || !strings.EqualFold(item.Status, "active") {
+				return nil, fmt.Errorf("Cloudflare returned malformed Zone data")
+			}
+			if seenIDs[item.ID] || seenNames[name] {
+				return nil, fmt.Errorf("Cloudflare returned duplicate Zone data")
+			}
+			seenIDs[item.ID], seenNames[name] = true, true
+			result = append(result, domain.Zone{ID: item.ID, Name: name, Status: "active"})
+		}
+		if len(raw) < pageSize {
+			break
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
+	return result, nil
+}
+
 func (c *Client) GetFallbackOrigin(ctx context.Context, zoneID string) (domain.FallbackOrigin, error) {
 	var raw struct {
 		Origin string `json:"origin"`
@@ -138,6 +176,7 @@ type rawDNSRecord struct {
 	Type    string         `json:"type"`
 	Content string         `json:"content"`
 	Meta    map[string]any `json:"meta"`
+	Proxied bool           `json:"proxied"`
 }
 
 func (c *Client) ListDNSRecords(ctx context.Context, zoneID, name string) ([]domain.DNSRecord, error) {
@@ -164,7 +203,7 @@ func (c *Client) ListDNSRecords(ctx context.Context, zoneID, name string) ([]dom
 		}
 		result = append(result, domain.DNSRecord{
 			ID: item.ID, Name: normalized, Type: strings.ToUpper(item.Type), Content: item.Content,
-			Managed: managed, Source: source,
+			Managed: managed, Source: source, Proxied: item.Proxied,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -182,16 +221,37 @@ func boolMeta(meta map[string]any, key string) bool {
 }
 
 func (c *Client) CreateDNSRecord(ctx context.Context, zoneID, recordType, name, content string) (domain.DNSRecord, error) {
+	return c.writeDNSRecord(ctx, http.MethodPost, zoneID, "", recordType, name, content, false)
+}
+
+func (c *Client) CreateProxiedDNSRecord(ctx context.Context, zoneID, recordType, name, content string) (domain.DNSRecord, error) {
+	return c.writeDNSRecord(ctx, http.MethodPost, zoneID, "", recordType, name, content, true)
+}
+
+func (c *Client) UpdateProxiedDNSRecord(ctx context.Context, zoneID, recordID, recordType, name, content string) (domain.DNSRecord, error) {
+	if strings.TrimSpace(recordID) == "" {
+		return domain.DNSRecord{}, fmt.Errorf("Cloudflare DNS record ID is required")
+	}
+	return c.writeDNSRecord(ctx, http.MethodPut, zoneID, recordID, recordType, name, content, true)
+}
+
+func (c *Client) writeDNSRecord(ctx context.Context, method, zoneID, recordID, recordType, name, content string, proxied bool) (domain.DNSRecord, error) {
 	var raw rawDNSRecord
 	body := map[string]any{"type": strings.ToUpper(recordType), "name": name, "content": content, "ttl": 1}
+	if proxied {
+		body["proxied"] = true
+	}
 	path := "/zones/" + url.PathEscape(zoneID) + "/dns_records"
-	if err := c.request(ctx, http.MethodPost, path, nil, body, &raw); err != nil {
+	if recordID != "" {
+		path += "/" + url.PathEscape(recordID)
+	}
+	if err := c.request(ctx, method, path, nil, body, &raw); err != nil {
 		return domain.DNSRecord{}, err
 	}
 	if raw.ID == "" {
 		return domain.DNSRecord{}, fmt.Errorf("Cloudflare create DNS response omitted record ID")
 	}
-	return domain.DNSRecord{ID: raw.ID, Name: raw.Name, Type: strings.ToUpper(raw.Type), Content: raw.Content}, nil
+	return domain.DNSRecord{ID: raw.ID, Name: raw.Name, Type: strings.ToUpper(raw.Type), Content: raw.Content, Proxied: raw.Proxied}, nil
 }
 
 func (c *Client) DeleteDNSRecord(ctx context.Context, zoneID, recordID string) error {
@@ -209,6 +269,7 @@ func parseCustomHostname(raw json.RawMessage) (*domain.CustomHostname, error) {
 			Status  string           `json:"status"`
 			Records []map[string]any `json:"validation_records"`
 		} `json:"ssl"`
+		CustomOriginServer string `json:"custom_origin_server"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return nil, fmt.Errorf("Cloudflare returned malformed Custom Hostname data")
@@ -237,9 +298,16 @@ func parseCustomHostname(raw json.RawMessage) (*domain.CustomHostname, error) {
 		}
 	}
 	sort.Slice(records, func(i, j int) bool { return records[i].Name < records[j].Name })
+	customOrigin := strings.TrimSpace(payload.CustomOriginServer)
+	if customOrigin != "" {
+		customOrigin, err = domain.NormalizeHostname(customOrigin)
+		if err != nil {
+			return nil, fmt.Errorf("Cloudflare returned malformed Custom Hostname data")
+		}
+	}
 	return &domain.CustomHostname{
 		ID: payload.ID, Hostname: hostname, Status: strings.ToLower(payload.Status),
-		SSLStatus: strings.ToLower(payload.SSL.Status), ValidationRecords: records,
+		SSLStatus: strings.ToLower(payload.SSL.Status), CustomOriginServer: customOrigin, ValidationRecords: records,
 	}, nil
 }
 
@@ -296,11 +364,24 @@ func (c *Client) GetCustomHostname(ctx context.Context, zoneID, hostnameID strin
 	return parseCustomHostname(raw)
 }
 
-func (c *Client) CreateCustomHostname(ctx context.Context, zoneID, hostname string) (*domain.CustomHostname, error) {
+func (c *Client) CreateCustomHostname(ctx context.Context, zoneID, hostname, customOrigin string) (*domain.CustomHostname, error) {
 	var raw json.RawMessage
 	body := map[string]any{"hostname": hostname, "ssl": map[string]string{"method": "txt", "type": "dv"}}
+	if customOrigin != "" {
+		body["custom_origin_server"] = customOrigin
+	}
 	path := "/zones/" + url.PathEscape(zoneID) + "/custom_hostnames"
 	if err := c.request(ctx, http.MethodPost, path, nil, body, &raw); err != nil {
+		return nil, err
+	}
+	return parseCustomHostname(raw)
+}
+
+func (c *Client) UpdateCustomHostnameOrigin(ctx context.Context, zoneID, hostnameID, customOrigin string) (*domain.CustomHostname, error) {
+	var raw json.RawMessage
+	body := map[string]any{"custom_origin_server": customOrigin}
+	path := "/zones/" + url.PathEscape(zoneID) + "/custom_hostnames/" + url.PathEscape(hostnameID)
+	if err := c.request(ctx, http.MethodPatch, path, nil, body, &raw); err != nil {
 		return nil, err
 	}
 	return parseCustomHostname(raw)

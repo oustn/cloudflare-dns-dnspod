@@ -20,7 +20,7 @@ type Cloudflare interface {
 	GetCustomHostname(context.Context, string, string) (*domain.CustomHostname, error)
 	CreateDNSRecord(context.Context, string, string, string, string) (domain.DNSRecord, error)
 	DeleteDNSRecord(context.Context, string, string) error
-	CreateCustomHostname(context.Context, string, string) (*domain.CustomHostname, error)
+	CreateCustomHostname(context.Context, string, string, string) (*domain.CustomHostname, error)
 }
 
 type DNSPod interface {
@@ -300,7 +300,7 @@ func Add(ctx context.Context, cfg config.Config, subdomain string, services Serv
 			result.State = "planned"
 			return result, nil
 		}
-		host, err = services.Cloudflare.CreateCustomHostname(ctx, cfg.CFSaaSZoneID, hostname)
+		host, err = services.Cloudflare.CreateCustomHostname(ctx, cfg.CFSaaSZoneID, hostname, "")
 		if err != nil {
 			return result, err
 		}

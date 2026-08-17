@@ -50,9 +50,9 @@ func (f *fakeCF) DeleteDNSRecord(_ context.Context, _, id string) error {
 	f.writes = append(f.writes, "delete:"+id)
 	return nil
 }
-func (f *fakeCF) CreateCustomHostname(_ context.Context, _, hostname string) (*domain.CustomHostname, error) {
+func (f *fakeCF) CreateCustomHostname(_ context.Context, _, hostname, customOrigin string) (*domain.CustomHostname, error) {
 	f.writes = append(f.writes, "hostname:"+hostname)
-	f.host = &domain.CustomHostname{ID: "h1", Hostname: hostname, Status: "active", SSLStatus: "active"}
+	f.host = &domain.CustomHostname{ID: "h1", Hostname: hostname, Status: "active", SSLStatus: "active", CustomOriginServer: customOrigin}
 	return f.host, nil
 }
 
