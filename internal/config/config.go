@@ -14,9 +14,10 @@ import (
 type Command string
 
 const (
-	CommandAdd     Command = "add"
-	CommandSetEdge Command = "set-edge"
-	CommandStatus  Command = "status"
+	CommandAdd        Command = "add"
+	CommandSetEdge    Command = "set-edge"
+	CommandSetBackend Command = "set-backend"
+	CommandStatus     Command = "status"
 )
 
 type Config struct {
