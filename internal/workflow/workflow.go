@@ -20,8 +20,11 @@ type Cloudflare interface {
 	FindCustomHostname(context.Context, string, string) (*domain.CustomHostname, error)
 	GetCustomHostname(context.Context, string, string) (*domain.CustomHostname, error)
 	CreateDNSRecord(context.Context, string, string, string, string) (domain.DNSRecord, error)
+	CreateProxiedDNSRecord(context.Context, string, string, string, string) (domain.DNSRecord, error)
+	UpdateProxiedDNSRecord(context.Context, string, string, string, string, string) (domain.DNSRecord, error)
 	DeleteDNSRecord(context.Context, string, string) error
 	CreateCustomHostname(context.Context, string, string, string) (*domain.CustomHostname, error)
+	UpdateCustomHostnameOrigin(context.Context, string, string, string) (*domain.CustomHostname, error)
 }
 
 type DNSPod interface {
@@ -57,6 +60,9 @@ func (e *BlockedError) Error() string {
 }
 
 type AddOptions struct {
+	Zone           string
+	OriginSet      bool
+	Origin         string
 	Wait           bool
 	DryRun         bool
 	ReplaceStaleNS bool
@@ -82,6 +88,10 @@ type addSnapshot struct {
 	hostname      *domain.CustomHostname
 	state         string
 	checks        []domain.Check
+	originType    string
+	originTarget  string
+	originAction  string
+	originName    string
 }
 
 func validateServices(services Services) error {
@@ -113,22 +123,22 @@ func preflightIdentity(ctx context.Context, cfg config.Config, cf Cloudflare) (d
 	return parent, saas, checks, blockers
 }
 
-func preflightAdd(ctx context.Context, cfg config.Config, hostname string, services Services, replaceStale bool) (addSnapshot, error) {
+func preflightAdd(ctx context.Context, cfg config.Config, hostname string, services Services, options AddOptions) (addSnapshot, error) {
 	var snap addSnapshot
-	parent, saas, checks, blockers := preflightIdentity(ctx, cfg, services.Cloudflare)
-	snap.parentZone, snap.saasZone, snap.checks = parent, saas, checks
-
-	fallback, err := services.Cloudflare.GetFallbackOrigin(ctx, cfg.CFSaaSZoneID)
+	infra, err := discoverInfrastructure(ctx, cfg, hostname, options.Zone, services.Cloudflare)
 	if err != nil {
-		blockers = append(blockers, "cannot verify Cloudflare Fallback Origin: "+err.Error())
-	} else if !strings.EqualFold(fallback.Status, "active") || !domain.EqualTarget(fallback.Origin, cfg.CFFallbackHost) {
-		blockers = append(blockers, fmt.Sprintf("Cloudflare Fallback Origin mismatch/inactive: configured=%s actual=%s status=%s", cfg.CFFallbackHost, fallback.Origin, fallback.Status))
-	} else {
-		snap.checks = append(snap.checks, domain.Check{Name: "fallback_origin", OK: true})
+		return snap, &BlockedError{Operation: "add", Blockers: []string{err.Error()}}
 	}
-	snap.fallback = fallback
+	snap.parentZone, snap.saasZone, snap.fallback, snap.hostname = infra.Parent, infra.SaaS, infra.Fallback, infra.Hostname
+	snap.originName = infra.OriginName
+	snap.checks = []domain.Check{
+		{Name: "cloudflare_parent_zone", OK: true},
+		{Name: "cloudflare_saas_zone", OK: true, Message: infra.Source},
+		{Name: "fallback_origin", OK: true},
+	}
+	blockers := []string{}
 
-	records, err := services.Cloudflare.ListDNSRecords(ctx, cfg.CFParentZoneID, hostname)
+	records, err := services.Cloudflare.ListDNSRecords(ctx, infra.Parent.ID, hostname)
 	if err != nil {
 		blockers = append(blockers, "cannot list exact Cloudflare parent records: "+err.Error())
 	}
@@ -138,11 +148,43 @@ func preflightAdd(ctx context.Context, cfg config.Config, hostname string, servi
 		blockers = append(blockers, "cannot inspect exact DNSPod Zone: "+err.Error())
 	}
 	snap.zone = zone
-	host, err := services.Cloudflare.FindCustomHostname(ctx, cfg.CFSaaSZoneID, hostname)
-	if err != nil {
-		blockers = append(blockers, "cannot inspect exact Cloudflare Custom Hostname: "+err.Error())
+	host := infra.Hostname
+	if host != nil {
+		if options.OriginSet && !domain.EqualTarget(host.CustomOriginServer, infra.OriginName) {
+			blockers = append(blockers, fmt.Sprintf("Custom Hostname custom origin is %q; use set-backend instead of add", host.CustomOriginServer))
+		}
+		if !options.OriginSet && strings.TrimSpace(host.CustomOriginServer) != "" {
+			blockers = append(blockers, fmt.Sprintf("Custom Hostname already uses custom origin %s; use set-backend instead of add", host.CustomOriginServer))
+		}
 	}
-	snap.hostname = host
+	if options.OriginSet {
+		target := options.Origin
+		if strings.TrimSpace(target) == "" {
+			target = infra.Fallback.Origin
+		}
+		snap.originType, snap.originTarget, err = domain.ClassifyTarget(target, "origin")
+		if err != nil {
+			blockers = append(blockers, err.Error())
+		} else {
+			if domain.EqualTarget(snap.originTarget, hostname) || domain.EqualTarget(snap.originTarget, infra.OriginName) {
+				blockers = append(blockers, "custom origin target would create a routing loop")
+			}
+			if snap.originType == "CNAME" && !domain.EqualTarget(snap.originTarget, infra.Fallback.Origin) {
+				if _, targetErr := services.Resolver.CheckHostTarget(ctx, hostname, snap.originTarget, 16); targetErr != nil {
+					blockers = append(blockers, targetErr.Error())
+				}
+			}
+			originRecords, listErr := services.Cloudflare.ListDNSRecords(ctx, infra.SaaS.ID, infra.OriginName)
+			if listErr != nil {
+				blockers = append(blockers, "cannot inspect Custom Origin DNS: "+listErr.Error())
+			} else {
+				snap.originAction, err = planOriginRecord(originRecords, snap.originType, snap.originTarget, false)
+				if err != nil {
+					blockers = append(blockers, err.Error()+"; use set-backend instead of add")
+				}
+			}
+		}
+	}
 
 	expectedNS := map[string]bool{}
 	if zone != nil {
@@ -168,7 +210,7 @@ func preflightAdd(ctx context.Context, cfg config.Config, hostname string, servi
 			ns := strings.ToLower(strings.TrimSuffix(record.Content, "."))
 			if zone == nil {
 				blockers = append(blockers, fmt.Sprintf("existing NS delegation %s is not owned by an accessible DNSPod Zone", ns))
-			} else if !expectedNS[ns] && !replaceStale {
+			} else if !expectedNS[ns] && !options.ReplaceStaleNS {
 				blockers = append(blockers, fmt.Sprintf("unexpected NS delegation %s; use --replace-stale-ns only after verification", ns))
 			}
 		default:
@@ -191,21 +233,18 @@ func preflightAdd(ctx context.Context, cfg config.Config, hostname string, servi
 	return snap, nil
 }
 
-func Add(ctx context.Context, cfg config.Config, subdomain string, services Services, options AddOptions) (domain.OperationResult, error) {
+func Add(ctx context.Context, cfg config.Config, hostname string, services Services, options AddOptions) (domain.OperationResult, error) {
 	if err := validateServices(services); err != nil {
 		return domain.OperationResult{}, err
 	}
-	hostname, err := domain.BuildHostname(subdomain, cfg.CFParentZoneName)
+	hostname, err := domain.NormalizeHostname(hostname)
 	if err != nil {
 		return domain.OperationResult{}, err
-	}
-	if cfg.CFFallbackHost == "" {
-		return domain.OperationResult{}, fmt.Errorf("CF_FALLBACK_HOST is required for add")
 	}
 	if options.Timeout < 0 || options.PollInterval < 0 {
 		return domain.OperationResult{}, fmt.Errorf("timeout and poll interval must be non-negative")
 	}
-	snap, err := preflightAdd(ctx, cfg, hostname, services, options.ReplaceStaleNS)
+	snap, err := preflightAdd(ctx, cfg, hostname, services, options)
 	if err != nil {
 		return domain.OperationResult{}, err
 	}
@@ -226,7 +265,7 @@ func Add(ctx context.Context, cfg config.Config, subdomain string, services Serv
 		}
 		result.Wrote = true
 		result.Changes = append(result.Changes, domain.Change{Resource: "dnspod_validation", Action: "requested"})
-		action, err := ensureParentTXT(ctx, cfg, services.Cloudflare, validation)
+		action, err := ensureParentTXT(ctx, snap.parentZone.ID, services.Cloudflare, validation)
 		if err != nil {
 			return result, err
 		}
@@ -259,7 +298,7 @@ func Add(ctx context.Context, cfg config.Config, subdomain string, services Serv
 		result.Changes = append(result.Changes, domain.Change{Resource: "dnspod_zone", Action: "created"})
 	}
 
-	nsChanges, wrote, err := reconcileNS(ctx, cfg, services.Cloudflare, hostname, zone.Nameservers, options.ReplaceStaleNS, options.DryRun)
+	nsChanges, wrote, err := reconcileNS(ctx, snap.parentZone.ID, services.Cloudflare, hostname, zone.Nameservers, options.ReplaceStaleNS, options.DryRun)
 	if err != nil {
 		return result, err
 	}
@@ -292,6 +331,28 @@ func Add(ctx context.Context, cfg config.Config, subdomain string, services Serv
 		}
 	}
 	result.Status = map[string]any{"assigned_nameservers": zone.Nameservers, "observed_nameservers": observed, "delegation_ready": delegated}
+	result.Status["edge"] = map[string]any{"provider": "dnspod"}
+	backendStatus := map[string]any{"mode": "fallback", "fallback_origin": snap.fallback.Origin}
+	if options.OriginSet {
+		backendStatus = map[string]any{
+			"mode": "custom", "fallback_origin": snap.fallback.Origin,
+			"custom_origin_server": snap.originName, "type": snap.originType,
+			"target": snap.originTarget, "proxied": true,
+		}
+		action := snap.originAction
+		if action == "create" {
+			action = "would-create"
+			if !options.DryRun {
+				if _, err := services.Cloudflare.CreateProxiedDNSRecord(ctx, snap.saasZone.ID, snap.originType, snap.originName, snap.originTarget); err != nil {
+					return result, err
+				}
+				action = "created"
+				result.Wrote = true
+			}
+		}
+		result.Changes = append(result.Changes, domain.Change{Resource: "origin_dns", Action: action, Detail: snap.originType + " " + snap.originTarget})
+	}
+	result.Status["backend"] = backendStatus
 
 	host := snap.hostname
 	if host == nil {
@@ -301,7 +362,14 @@ func Add(ctx context.Context, cfg config.Config, subdomain string, services Serv
 			result.State = "planned"
 			return result, nil
 		}
-		host, err = services.Cloudflare.CreateCustomHostname(ctx, cfg.CFSaaSZoneID, hostname, "")
+		customOrigin := ""
+		if options.OriginSet {
+			customOrigin, err = domain.RebaseHostname(hostname, snap.parentZone.Name, snap.saasZone.Name)
+			if err != nil {
+				return result, err
+			}
+		}
+		host, err = services.Cloudflare.CreateCustomHostname(ctx, snap.saasZone.ID, hostname, customOrigin)
 		if err != nil {
 			return result, err
 		}
@@ -310,7 +378,7 @@ func Add(ctx context.Context, cfg config.Config, subdomain string, services Serv
 	} else {
 		result.Changes = append(result.Changes, domain.Change{Resource: "custom_hostname", Action: "reused"})
 	}
-	host, err = services.Cloudflare.GetCustomHostname(ctx, cfg.CFSaaSZoneID, host.ID)
+	host, err = services.Cloudflare.GetCustomHostname(ctx, snap.saasZone.ID, host.ID)
 	if err != nil {
 		return result, err
 	}
@@ -336,7 +404,7 @@ func Add(ctx context.Context, cfg config.Config, subdomain string, services Serv
 	if err := publishValidations(host); err != nil {
 		return result, err
 	}
-	fallbackAction, err := services.DNSPod.EnsureFallback(ctx, zone.Name, hostname, cfg.CFFallbackHost, options.DryRun)
+	fallbackAction, err := services.DNSPod.EnsureFallback(ctx, zone.Name, hostname, snap.fallback.Origin, options.DryRun)
 	if err != nil {
 		return result, err
 	}
@@ -346,7 +414,7 @@ func Add(ctx context.Context, cfg config.Config, subdomain string, services Serv
 	}
 	if options.Wait && !host.Active() {
 		_, err = waitUntil(ctx, options.Timeout, options.PollInterval, func() (bool, error) {
-			host, err = services.Cloudflare.GetCustomHostname(ctx, cfg.CFSaaSZoneID, host.ID)
+			host, err = services.Cloudflare.GetCustomHostname(ctx, snap.saasZone.ID, host.ID)
 			if err != nil {
 				return false, err
 			}
@@ -366,8 +434,31 @@ func Add(ctx context.Context, cfg config.Config, subdomain string, services Serv
 	return result, nil
 }
 
-func ensureParentTXT(ctx context.Context, cfg config.Config, cf Cloudflare, validation domain.DNSPodValidation) (string, error) {
-	records, err := cf.ListDNSRecords(ctx, cfg.CFParentZoneID, validation.Name)
+func planOriginRecord(records []domain.DNSRecord, recordType, target string, allowUpdate bool) (string, error) {
+	if len(records) == 0 {
+		return "create", nil
+	}
+	if len(records) != 1 {
+		return "", fmt.Errorf("Custom Origin DNS records are ambiguous")
+	}
+	record := records[0]
+	if record.Managed {
+		return "", fmt.Errorf("Custom Origin DNS record is application-managed")
+	}
+	if record.Type != "A" && record.Type != "CNAME" {
+		return "", fmt.Errorf("Custom Origin DNS has incompatible %s record", record.Type)
+	}
+	if record.Type == recordType && domain.EqualTarget(record.Content, target) && record.Proxied {
+		return "unchanged", nil
+	}
+	if !allowUpdate {
+		return "", fmt.Errorf("Custom Origin DNS does not match the requested target")
+	}
+	return "update", nil
+}
+
+func ensureParentTXT(ctx context.Context, parentZoneID string, cf Cloudflare, validation domain.DNSPodValidation) (string, error) {
+	records, err := cf.ListDNSRecords(ctx, parentZoneID, validation.Name)
 	if err != nil {
 		return "", err
 	}
@@ -379,19 +470,19 @@ func ensureParentTXT(ctx context.Context, cfg config.Config, cf Cloudflare, vali
 			return "", fmt.Errorf("validation name %s has an incompatible %s record", validation.Name, record.Type)
 		}
 	}
-	_, err = cf.CreateDNSRecord(ctx, cfg.CFParentZoneID, "TXT", validation.Name, validation.Value)
+	_, err = cf.CreateDNSRecord(ctx, parentZoneID, "TXT", validation.Name, validation.Value)
 	if err != nil {
 		return "", err
 	}
 	return "created", nil
 }
 
-func reconcileNS(ctx context.Context, cfg config.Config, cf Cloudflare, hostname string, assigned []string, replace, dryRun bool) ([]domain.Change, bool, error) {
+func reconcileNS(ctx context.Context, parentZoneID string, cf Cloudflare, hostname string, assigned []string, replace, dryRun bool) ([]domain.Change, bool, error) {
 	expected, err := domain.NormalizeNameservers(assigned)
 	if err != nil {
 		return nil, false, err
 	}
-	records, err := cf.ListDNSRecords(ctx, cfg.CFParentZoneID, hostname)
+	records, err := cf.ListDNSRecords(ctx, parentZoneID, hostname)
 	if err != nil {
 		return nil, false, err
 	}
@@ -420,7 +511,7 @@ func reconcileNS(ctx context.Context, cfg config.Config, cf Cloudflare, hostname
 		}
 		action := "would-create"
 		if !dryRun {
-			if _, err := cf.CreateDNSRecord(ctx, cfg.CFParentZoneID, "NS", hostname, ns); err != nil {
+			if _, err := cf.CreateDNSRecord(ctx, parentZoneID, "NS", hostname, ns); err != nil {
 				return changes, wrote, err
 			}
 			action, wrote = "created", true
@@ -436,7 +527,7 @@ func reconcileNS(ctx context.Context, cfg config.Config, cf Cloudflare, hostname
 		}
 		action := "would-delete"
 		if !dryRun {
-			if err := cf.DeleteDNSRecord(ctx, cfg.CFParentZoneID, record.ID); err != nil {
+			if err := cf.DeleteDNSRecord(ctx, parentZoneID, record.ID); err != nil {
 				return changes, wrote, err
 			}
 			action, wrote = "deleted", true

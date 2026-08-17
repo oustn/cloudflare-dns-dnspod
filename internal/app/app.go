@@ -104,6 +104,7 @@ func (r Runner) Run(ctx context.Context, args []string, stdout, stderr io.Writer
 	switch options.command {
 	case config.CommandAdd:
 		result, err = workflow.Add(ctx, cfg, options.hostname, services, workflow.AddOptions{
+			Zone: options.zone, OriginSet: options.originSet, Origin: options.origin,
 			Wait: options.wait, DryRun: options.dryRun, ReplaceStaleNS: options.replace,
 			Timeout: options.timeout, PollInterval: options.poll,
 		})
