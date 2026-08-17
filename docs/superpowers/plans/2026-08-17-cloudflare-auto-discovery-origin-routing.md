@@ -463,7 +463,7 @@ type AddOptions struct {
 }
 ```
 
-Replace `preflightIdentity` with `discoverInfrastructure`. Pass discovered Zone IDs into `ensureParentTXT` and `reconcileNS`. In origin mode, normalize an explicit target or use `Infrastructure.Fallback.Origin`, classify exact origin records before any writes, create the proxied record before the Custom Hostname, and pass `Infrastructure.OriginName` to `CreateCustomHostname`. Validate an existing Custom Hostname's `CustomOriginServer` against the requested mode.
+Replace `preflightIdentity` with `discoverInfrastructure`. Pass discovered Zone IDs into `ensureParentTXT` and `reconcileNS`. In origin mode, normalize an explicit target or use the literal placeholder `example.com`, classify exact origin records before any writes, create the proxied record before the Custom Hostname, and pass `Infrastructure.OriginName` to `CreateCustomHostname`. Validate an existing Custom Hostname's `CustomOriginServer` against the requested mode.
 
 Use the discovered Fallback Host for `DNSPod.EnsureFallback`. Preserve the current interrupted-run behavior and report `origin_dns`, `custom_hostname`, `edge`, and `backend` state separately.
 

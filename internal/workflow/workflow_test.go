@@ -166,14 +166,6 @@ func (f *fakeResolver) CheckHostTarget(context.Context, string, string, int) ([]
 	return f.chain, nil
 }
 
-func testConfig() config.Config {
-	return config.Config{
-		CFAPIToken: "token", CFParentZoneID: "parent", CFParentZoneName: "example.com",
-		CFSaaSZoneID: "saas", CFFallbackHost: "fallback.platform.example.net",
-		DNSPodSecretID: "id", DNSPodSecretKey: "key", DNSPodRecordLine: "默认",
-	}
-}
-
 func minimalConfig() config.Config {
 	return config.Config{
 		CFAPIToken: "token", DNSPodSecretID: "id", DNSPodSecretKey: "key", DNSPodRecordLine: "默认",
@@ -227,7 +219,7 @@ func TestAddFallbackModeOmitsCustomOrigin(t *testing.T) {
 	}
 }
 
-func TestAddBareOriginCreatesFallbackBackedAlias(t *testing.T) {
+func TestAddBareOriginCreatesExampleDotComAlias(t *testing.T) {
 	t.Parallel()
 	cf, dns, resolver := customOriginServices()
 	cf.host = nil
@@ -235,7 +227,7 @@ func TestAddBareOriginCreatesFallbackBackedAlias(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsWrite(cf.writes, "origin-dns:CNAME:custom.platform.example.net:fallback.platform.example.net") {
+	if !containsWrite(cf.writes, "origin-dns:CNAME:custom.platform.example.net:example.com") {
 		t.Fatalf("writes=%v", cf.writes)
 	}
 	if !containsWrite(cf.writes, "hostname:custom.example.com:custom.platform.example.net") || result.Status["backend"] == nil {
@@ -282,7 +274,7 @@ func TestAddMatchingOriginRerunDoesNotRewriteOrigin(t *testing.T) {
 	t.Parallel()
 	cf, dns, resolver := customOriginServices()
 	cf.host.CustomOriginServer = "custom.platform.example.net"
-	cf.records["custom.platform.example.net"] = []domain.DNSRecord{{ID: "origin", Name: "custom.platform.example.net", Type: "CNAME", Content: "fallback.platform.example.net", Proxied: true}}
+	cf.records["custom.platform.example.net"] = []domain.DNSRecord{{ID: "origin", Name: "custom.platform.example.net", Type: "CNAME", Content: "example.com", Proxied: true}}
 	_, err := Add(context.Background(), minimalConfig(), "custom.example.com", Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, AddOptions{Zone: "platform.example.net", OriginSet: true})
 	if err != nil {
 		t.Fatal(err)
@@ -307,7 +299,7 @@ func TestAddPreflightBlocksExistingTrafficWithZeroWrites(t *testing.T) {
 	t.Parallel()
 	cf, dns, resolver := readyServices()
 	cf.records["custom.example.com"] = []domain.DNSRecord{{ID: "worker", Name: "custom.example.com", Type: "AAAA", Content: "100::", Managed: true}}
-	_, err := Add(context.Background(), testConfig(), "custom.example.com", Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, AddOptions{})
+	_, err := Add(context.Background(), minimalConfig(), "custom.example.com", Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, AddOptions{})
 	if err == nil || !strings.Contains(err.Error(), "AAAA") {
 		t.Fatalf("expected AAAA blocker, got %v", err)
 	}
@@ -320,7 +312,7 @@ func TestAddPreflightBlocksFallbackMismatch(t *testing.T) {
 	t.Parallel()
 	cf, dns, resolver := readyServices()
 	cf.fallback.Origin = "wrong.example.com"
-	_, err := Add(context.Background(), testConfig(), "custom.example.com", Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, AddOptions{})
+	_, err := Add(context.Background(), minimalConfig(), "custom.example.com", Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, AddOptions{})
 	if err == nil || !strings.Contains(err.Error(), "Fallback") {
 		t.Fatalf("expected Fallback blocker, got %v", err)
 	}
@@ -332,7 +324,7 @@ func TestAddPreflightBlocksFallbackMismatch(t *testing.T) {
 func TestSetEdgeOnlyWritesOneDNSPodTrafficRecord(t *testing.T) {
 	t.Parallel()
 	cf, dns, resolver := readyServices()
-	result, err := SetEdge(context.Background(), testConfig(), "custom.example.com", EdgeTarget{Host: "edge.example.com"}, Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, EdgeOptions{})
+	result, err := SetEdge(context.Background(), minimalConfig(), "custom.example.com", EdgeTarget{Host: "edge.example.com"}, Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, EdgeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +340,7 @@ func TestSetEdgeUnchangedDoesNotWrite(t *testing.T) {
 	t.Parallel()
 	cf, dns, resolver := readyServices()
 	dns.setAction = "unchanged"
-	result, err := SetEdge(context.Background(), testConfig(), "custom.example.com", EdgeTarget{Host: "edge.example.com"}, Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, EdgeOptions{})
+	result, err := SetEdge(context.Background(), minimalConfig(), "custom.example.com", EdgeTarget{Host: "edge.example.com"}, Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, EdgeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +356,7 @@ func TestAddRerunPreservesExistingEdgeTarget(t *testing.T) {
 	t.Parallel()
 	cf, dns, resolver := readyServices()
 	dns.records = []domain.DNSRecord{{ID: "edge", Name: "@", Type: "CNAME", Content: "edge.example.com", Line: "默认"}}
-	result, err := Add(context.Background(), testConfig(), "custom.example.com", Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, AddOptions{})
+	result, err := Add(context.Background(), minimalConfig(), "custom.example.com", Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, AddOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +383,7 @@ func TestSetEdgePreflightBlocksAmbiguousApexWithoutWrite(t *testing.T) {
 		{ID: "a", Name: "@", Type: "A", Content: "1.1.1.1", Line: "默认"},
 		{ID: "c", Name: "@", Type: "CNAME", Content: "old.example.com", Line: "默认"},
 	}
-	_, err := SetEdge(context.Background(), testConfig(), "custom.example.com", EdgeTarget{Host: "edge.example.com"}, Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, EdgeOptions{})
+	_, err := SetEdge(context.Background(), minimalConfig(), "custom.example.com", EdgeTarget{Host: "edge.example.com"}, Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, EdgeOptions{})
 	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("expected ambiguous apex blocker, got %v", err)
 	}
@@ -404,7 +396,7 @@ func TestSetEdgePreflightBlocksTrafficOnAnotherLine(t *testing.T) {
 	t.Parallel()
 	cf, dns, resolver := readyServices()
 	dns.records = []domain.DNSRecord{{ID: "other", Name: "@", Type: "A", Content: "1.1.1.1", Line: "境外"}}
-	_, err := SetEdge(context.Background(), testConfig(), "custom.example.com", EdgeTarget{Host: "edge.example.com"}, Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, EdgeOptions{})
+	_, err := SetEdge(context.Background(), minimalConfig(), "custom.example.com", EdgeTarget{Host: "edge.example.com"}, Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver}, EdgeOptions{})
 	if err == nil || !strings.Contains(err.Error(), "unexpected line") {
 		t.Fatalf("expected non-default line blocker, got %v", err)
 	}
@@ -419,7 +411,7 @@ func TestAddWaitRetriesTransientDelegationLookupErrors(t *testing.T) {
 	resolver.delegationFailures = 2
 	result, err := Add(
 		context.Background(),
-		testConfig(),
+		minimalConfig(),
 		"custom.example.com",
 		Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver},
 		AddOptions{Wait: true, Timeout: 100 * time.Millisecond, PollInterval: time.Millisecond},
@@ -446,7 +438,7 @@ func TestAddWaitPublishesValidationRecordsThatAppearDuringPolling(t *testing.T) 
 
 	result, err := Add(
 		context.Background(),
-		testConfig(),
+		minimalConfig(),
 		"custom.example.com",
 		Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver},
 		AddOptions{Wait: true, Timeout: 100 * time.Millisecond, PollInterval: time.Millisecond},
@@ -465,5 +457,44 @@ func TestAddWaitPublishesValidationRecordsThatAppearDuringPolling(t *testing.T) 
 	}
 	if !foundTXT {
 		t.Fatalf("validation TXT appearing during polling was not published: %v", dns.writes)
+	}
+}
+
+func TestStatusSeparatesEdgeAndFallbackBackend(t *testing.T) {
+	t.Parallel()
+	cf, dns, resolver := readyServices()
+	result, err := Status(context.Background(), minimalConfig(), "custom.example.com", "", Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	edge, ok := result.Status["edge"].(map[string]any)
+	if !ok || edge["provider"] != "dnspod" {
+		t.Fatalf("edge=%#v", result.Status["edge"])
+	}
+	backend, ok := result.Status["backend"].(map[string]any)
+	if !ok || backend["mode"] != "fallback" || backend["fallback_origin"] != "fallback.platform.example.net" {
+		t.Fatalf("backend=%#v", result.Status["backend"])
+	}
+	if len(cf.writes) != 0 || len(dns.writes) != 0 {
+		t.Fatalf("status wrote state: cf=%v dns=%v", cf.writes, dns.writes)
+	}
+}
+
+func TestStatusReportsCustomBackendRecord(t *testing.T) {
+	t.Parallel()
+	cf, dns, resolver := readyServices()
+	cf.host.CustomOriginServer = "custom.platform.example.net"
+	cf.records["custom.platform.example.net"] = []domain.DNSRecord{{ID: "origin", Name: "custom.platform.example.net", Type: "CNAME", Content: "backend.example.org", Proxied: true}}
+	result, err := Status(context.Background(), minimalConfig(), "custom.example.com", "", Services{Cloudflare: cf, DNSPod: dns, Resolver: resolver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, ok := result.Status["backend"].(map[string]any)
+	if !ok || backend["mode"] != "custom" || backend["custom_origin_server"] != "custom.platform.example.net" {
+		t.Fatalf("backend=%#v", result.Status["backend"])
+	}
+	records, ok := backend["records"].([]domain.DNSRecord)
+	if !ok || len(records) != 1 || records[0].Content != "backend.example.org" || !records[0].Proxied {
+		t.Fatalf("records=%#v", backend["records"])
 	}
 }

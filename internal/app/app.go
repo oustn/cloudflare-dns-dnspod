@@ -113,7 +113,7 @@ func (r Runner) Run(ctx context.Context, args []string, stdout, stderr io.Writer
 	case config.CommandSetBackend:
 		result, err = workflow.SetBackend(ctx, cfg, options.hostname, options.backend, services, workflow.BackendOptions{Zone: options.zone, DryRun: options.dryRun})
 	case config.CommandStatus:
-		result, err = workflow.Status(ctx, cfg, options.hostname, services)
+		result, err = workflow.Status(ctx, cfg, options.hostname, options.zone, services)
 	default:
 		err = errors.New("unsupported command")
 	}

@@ -9,13 +9,10 @@ import (
 
 func completeValues() map[string]string {
 	return map[string]string{
-		"CF_API_TOKEN":        "cf-secret",
-		"CF_PARENT_ZONE_ID":   "parent-id",
-		"CF_PARENT_ZONE_NAME": "example.com",
-		"CF_SAAS_ZONE_ID":     "saas-id",
-		"CF_FALLBACK_HOST":    "fallback.example.com",
-		"DNSPOD_SECRET_ID":    "dns-id",
-		"DNSPOD_SECRET_KEY":   "dns-secret",
+		"CF_API_TOKEN":      "cf-secret",
+		"CF_ZONE":           "platform.example.net",
+		"DNSPOD_SECRET_ID":  "dns-id",
+		"DNSPOD_SECRET_KEY": "dns-secret",
 	}
 }
 
@@ -66,9 +63,7 @@ func TestLoadFileThenEnvironmentOverride(t *testing.T) {
 	path := filepath.Join(dir, "test.env")
 	data := strings.Join([]string{
 		"CF_API_TOKEN=file-token",
-		"CF_PARENT_ZONE_ID=parent-id",
-		"CF_PARENT_ZONE_NAME=example.com",
-		"CF_SAAS_ZONE_ID=saas-id",
+		"CF_ZONE=platform.example.net",
 		"DNSPOD_SECRET_ID=dns-id",
 		"DNSPOD_SECRET_KEY=dns-secret",
 	}, "\n")

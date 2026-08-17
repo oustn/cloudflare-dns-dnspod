@@ -106,21 +106,6 @@ func validLabel(label string) bool {
 	return true
 }
 
-func BuildHostname(subdomain, parent string) (string, error) {
-	rel := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(subdomain), "."))
-	if rel == "" || rel == "*" || strings.ContainsAny(rel, ":/") {
-		return "", fmt.Errorf("subdomain must be a relative DNS name")
-	}
-	base, err := NormalizeHostname(parent)
-	if err != nil {
-		return "", fmt.Errorf("parent zone: %w", err)
-	}
-	if rel == base || strings.HasSuffix(rel, "."+base) {
-		return "", fmt.Errorf("subdomain must be relative, not a fully qualified hostname")
-	}
-	return NormalizeHostname(rel + "." + base)
-}
-
 var nonPublicIPv4 = mustPrefixes(
 	"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
 	"169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",

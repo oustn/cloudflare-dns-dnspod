@@ -2,31 +2,6 @@ package domain
 
 import "testing"
 
-func TestBuildHostname(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name, subdomain, parent, want string
-		valid                         bool
-	}{
-		{"simple", "custom", "example.com", "custom.example.com", true},
-		{"nested", "a.b", "example.com.", "a.b.example.com", true},
-		{"fqdn", "custom.example.com", "example.com", "", false},
-		{"wildcard", "*", "example.com", "", false},
-		{"url", "https://custom", "example.com", "", false},
-		{"empty", "", "example.com", "", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := BuildHostname(tc.subdomain, tc.parent)
-			if tc.valid && (err != nil || got != tc.want) {
-				t.Fatalf("BuildHostname() = %q, %v; want %q", got, err, tc.want)
-			}
-			if !tc.valid && err == nil {
-				t.Fatalf("BuildHostname() unexpectedly accepted %q", tc.subdomain)
-			}
-		})
-	}
-}
-
 func TestValidatePublicIPv4(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

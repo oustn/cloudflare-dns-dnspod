@@ -21,21 +21,15 @@ const (
 )
 
 type Config struct {
-	CFAPIToken string
-	CFZone     string
-	// Legacy identity fields remain during the workflow migration and are removed once unused.
-	CFParentZoneID   string
-	CFParentZoneName string
-	CFSaaSZoneID     string
-	CFFallbackHost   string
+	CFAPIToken       string
+	CFZone           string
 	DNSPodSecretID   string
 	DNSPodSecretKey  string
 	DNSPodRecordLine string
 }
 
 var names = []string{
-	"CF_API_TOKEN", "CF_ZONE", "CF_PARENT_ZONE_ID", "CF_PARENT_ZONE_NAME", "CF_SAAS_ZONE_ID",
-	"CF_FALLBACK_HOST", "DNSPOD_SECRET_ID", "DNSPOD_SECRET_KEY", "DNSPOD_RECORD_LINE",
+	"CF_API_TOKEN", "CF_ZONE", "DNSPOD_SECRET_ID", "DNSPOD_SECRET_KEY", "DNSPOD_RECORD_LINE",
 }
 
 func Load(path string, command Command) (Config, error) {
@@ -75,20 +69,6 @@ func FromValues(values map[string]string, command Command) (Config, error) {
 			return Config{}, fmt.Errorf("CF_ZONE: %w", err)
 		}
 	}
-	parent := strings.TrimSpace(values["CF_PARENT_ZONE_NAME"])
-	if parent != "" {
-		parent, err = domain.NormalizeHostname(parent)
-		if err != nil {
-			return Config{}, fmt.Errorf("CF_PARENT_ZONE_NAME: %w", err)
-		}
-	}
-	fallback := strings.TrimSpace(values["CF_FALLBACK_HOST"])
-	if fallback != "" {
-		fallback, err = domain.NormalizeHostname(fallback)
-		if err != nil {
-			return Config{}, fmt.Errorf("CF_FALLBACK_HOST: %w", err)
-		}
-	}
 	line := strings.TrimSpace(values["DNSPOD_RECORD_LINE"])
 	if line == "" {
 		line = "默认"
@@ -96,10 +76,6 @@ func FromValues(values map[string]string, command Command) (Config, error) {
 	return Config{
 		CFAPIToken:       strings.TrimSpace(values["CF_API_TOKEN"]),
 		CFZone:           zone,
-		CFParentZoneID:   strings.TrimSpace(values["CF_PARENT_ZONE_ID"]),
-		CFParentZoneName: parent,
-		CFSaaSZoneID:     strings.TrimSpace(values["CF_SAAS_ZONE_ID"]),
-		CFFallbackHost:   fallback,
 		DNSPodSecretID:   strings.TrimSpace(values["DNSPOD_SECRET_ID"]),
 		DNSPodSecretKey:  strings.TrimSpace(values["DNSPOD_SECRET_KEY"]),
 		DNSPodRecordLine: line,

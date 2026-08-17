@@ -54,7 +54,7 @@ cf-dnspod add test.example.com --zone platform.example.net --wait
 Origin modes are selected as follows:
 
 - no `--origin`: create or reuse a Custom Hostname that uses the selected SaaS Zone's default Fallback Origin;
-- bare `--origin`: create a same-relative-name Custom Origin DNS record whose target is the discovered Fallback Host, then set that hostname as `custom_origin_server`;
+- bare `--origin`: create a same-relative-name Custom Origin DNS record whose target is the literal public placeholder `example.com`, then set that hostname as `custom_origin_server`;
 - `--origin=HOST`: create a proxied same-relative-name CNAME to the explicit Host;
 - `--origin=IPV4`: create a proxied same-relative-name A record to the explicit globally routable IPv4 address.
 
@@ -221,7 +221,7 @@ Required coverage includes:
 - longest proper parent-Zone discovery with pagination and label-boundary matching;
 - SaaS selection precedence for `--zone`, `CF_ZONE`, existing Custom Hostname ownership, unique discovery, no candidates, and multiple candidates;
 - capability checks that do not depend on `/user/tokens/verify`;
-- fallback, default-target Custom Origin, Host Custom Origin, and IP Custom Origin onboarding;
+- fallback, `example.com` default-target Custom Origin, Host Custom Origin, and IP Custom Origin onboarding;
 - exact origin-alias derivation for one-label and multi-label relative names;
 - Cloudflare DNS payloads with `proxied: true` and Custom Hostname payloads with the correct `custom_origin_server`;
 - `set-edge` unchanged/create/update/conflict paths and proof that it never performs backend writes;

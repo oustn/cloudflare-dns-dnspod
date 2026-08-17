@@ -80,6 +80,8 @@ type EdgeTarget struct {
 	IP   string
 }
 
+const defaultOriginTarget = "example.com"
+
 type addSnapshot struct {
 	parentZone    domain.Zone
 	saasZone      domain.Zone
@@ -100,28 +102,6 @@ func validateServices(services Services) error {
 		return fmt.Errorf("provider services are incomplete")
 	}
 	return nil
-}
-
-func preflightIdentity(ctx context.Context, cfg config.Config, cf Cloudflare) (domain.Zone, domain.Zone, []domain.Check, []string) {
-	checks := []domain.Check{}
-	blockers := []string{}
-	parent, err := cf.GetZone(ctx, cfg.CFParentZoneID)
-	if err != nil {
-		blockers = append(blockers, "cannot verify Cloudflare Parent Zone: "+err.Error())
-	} else if parent.ID != cfg.CFParentZoneID || !domain.EqualTarget(parent.Name, cfg.CFParentZoneName) || !strings.EqualFold(parent.Status, "active") {
-		blockers = append(blockers, fmt.Sprintf("Cloudflare Parent Zone ID/name/status mismatch: id=%s name=%s status=%s", parent.ID, parent.Name, parent.Status))
-	} else {
-		checks = append(checks, domain.Check{Name: "cloudflare_parent_zone", OK: true})
-	}
-	saas, err := cf.GetZone(ctx, cfg.CFSaaSZoneID)
-	if err != nil {
-		blockers = append(blockers, "cannot verify Cloudflare SaaS Zone: "+err.Error())
-	} else if saas.ID != cfg.CFSaaSZoneID || !strings.EqualFold(saas.Status, "active") {
-		blockers = append(blockers, fmt.Sprintf("Cloudflare SaaS Zone ID/status mismatch: id=%s status=%s", saas.ID, saas.Status))
-	} else {
-		checks = append(checks, domain.Check{Name: "cloudflare_saas_zone", OK: true})
-	}
-	return parent, saas, checks, blockers
 }
 
 func preflightAdd(ctx context.Context, cfg config.Config, hostname string, services Services, options AddOptions) (addSnapshot, error) {
@@ -161,7 +141,7 @@ func preflightAdd(ctx context.Context, cfg config.Config, hostname string, servi
 	if options.OriginSet {
 		target := options.Origin
 		if strings.TrimSpace(target) == "" {
-			target = infra.Fallback.Origin
+			target = defaultOriginTarget
 		}
 		snap.originType, snap.originTarget, err = domain.ClassifyTarget(target, "origin")
 		if err != nil {
@@ -710,47 +690,76 @@ func preflightEdge(ctx context.Context, cfg config.Config, hostname, recordType,
 	return snap, nil
 }
 
-func Status(ctx context.Context, cfg config.Config, subdomain string, services Services) (domain.OperationResult, error) {
+func Status(ctx context.Context, cfg config.Config, hostname, zoneOverride string, services Services) (domain.OperationResult, error) {
 	if err := validateServices(services); err != nil {
 		return domain.OperationResult{}, err
 	}
-	hostname, err := domain.BuildHostname(subdomain, cfg.CFParentZoneName)
+	hostname, err := domain.NormalizeHostname(hostname)
 	if err != nil {
 		return domain.OperationResult{}, err
 	}
-	parent, saas, checks, blockers := preflightIdentity(ctx, cfg, services.Cloudflare)
+	infra, err := discoverInfrastructure(ctx, cfg, hostname, zoneOverride, services.Cloudflare)
+	if err != nil {
+		return domain.OperationResult{}, &BlockedError{Operation: "status", Blockers: []string{err.Error()}}
+	}
+	checks := []domain.Check{
+		{Name: "cloudflare_parent_zone", OK: true},
+		{Name: "cloudflare_saas_zone", OK: true, Message: infra.Source},
+		{Name: "fallback_origin", OK: true},
+	}
+	blockers := []string{}
 	zone, err := services.DNSPod.FindZone(ctx, hostname)
 	if err != nil {
 		blockers = append(blockers, "DNSPod Zone: "+err.Error())
 	}
-	parentRecords, err := services.Cloudflare.ListDNSRecords(ctx, cfg.CFParentZoneID, hostname)
+	parentRecords, err := services.Cloudflare.ListDNSRecords(ctx, infra.Parent.ID, hostname)
 	if err != nil {
 		blockers = append(blockers, "Cloudflare records: "+err.Error())
 	}
-	host, err := services.Cloudflare.FindCustomHostname(ctx, cfg.CFSaaSZoneID, hostname)
-	if err != nil {
-		blockers = append(blockers, "Custom Hostname: "+err.Error())
-	}
+	host := infra.Hostname
 	var observed []string
 	delegated := false
 	var apex []domain.DNSRecord
 	if zone != nil {
-		observed, delegated, _ = services.Resolver.Delegation(ctx, hostname, zone.Nameservers)
+		observed, delegated, err = services.Resolver.Delegation(ctx, hostname, zone.Nameservers)
+		if err != nil {
+			blockers = append(blockers, "public delegation: "+err.Error())
+		}
 		apex, err = services.DNSPod.ListRecords(ctx, zone.Name, hostname)
 		if err != nil {
 			blockers = append(blockers, "DNSPod records: "+err.Error())
 		}
 	}
+	backend := map[string]any{
+		"mode":            "fallback",
+		"fallback_origin": infra.Fallback.Origin,
+	}
+	if host != nil && strings.TrimSpace(host.CustomOriginServer) != "" {
+		originRecords, listErr := services.Cloudflare.ListDNSRecords(ctx, infra.SaaS.ID, host.CustomOriginServer)
+		if listErr != nil {
+			blockers = append(blockers, "Custom Origin DNS: "+listErr.Error())
+		} else {
+			backend = map[string]any{
+				"mode":                 "custom",
+				"fallback_origin":      infra.Fallback.Origin,
+				"custom_origin_server": host.CustomOriginServer,
+				"records":              originRecords,
+			}
+		}
+	}
 	if len(blockers) > 0 {
+		sort.Strings(blockers)
 		return domain.OperationResult{}, &BlockedError{Operation: "status", Blockers: blockers}
 	}
 	ready := zone != nil && strings.EqualFold(zone.Status, "enable") && delegated && host.Active()
 	return domain.OperationResult{
 		Operation: "status", Hostname: hostname, Ready: ready, State: map[bool]string{true: "converged", false: "incomplete"}[ready], Checks: checks,
 		Status: map[string]any{
-			"parent_zone": parent, "saas_zone": saas, "dnspod_zone": zone,
+			"parent_zone": infra.Parent, "saas_zone": infra.SaaS, "dnspod_zone": zone,
 			"parent_records": parentRecords, "observed_nameservers": observed,
-			"delegation_ready": delegated, "custom_hostname": host, "apex_records": apex,
+			"delegation_ready": delegated, "custom_hostname": host,
+			"edge":    map[string]any{"provider": "dnspod", "records": apex},
+			"backend": backend,
 		},
 	}, nil
 }
